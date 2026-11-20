@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>混合单位称重数据导入与勘正演示</title>
+<style>
+  :root {
+    --bg: #f4f6fa; --card: #fff; --line: #d9dee8; --ink: #1f2937;
+    --muted: #6b7280; --blue: #1d4ed8; --green: #15803d; --amber: #b45309;
+    --red: #b91c1c; --chip: #eef2ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }
+  header { padding: 20px 28px; background: #0f172a; color: #fff; }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header p { margin: 0; color: #cbd5e1; font-size: 13px; }
+  main { max-width: 1180px; margin: 24px auto; padding: 0 20px 48px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; align-items: center; }
+  button { border: 0; border-radius: 8px; padding: 10px 18px; font-size: 14px; cursor: pointer; font-weight: 600; }
+  button.primary { background: var(--blue); color: #fff; }
+  button.warn { background: #c2410c; color: #fff; }
+  button.neutral { background: #334155; color: #fff; }
+  button.ghost { background: #e5e7eb; color: #374151; }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  .summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .stat { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; }
+  .stat .label { color: var(--muted); font-size: 12px; }
+  .stat .value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+  section.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; margin-bottom: 18px; }
+  section.card h2 { margin: 0 0 10px; font-size: 16px; }
+  .hint { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; vertical-align: top; }
+  th { background: #f8fafc; color: #475569; font-weight: 600; white-space: nowrap; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; }
+  .chip.confirmed { background: #dcfce7; color: var(--green); }
+  .chip.quarantined { background: #fef3c7; color: var(--amber); }
+  .chip.rejected { background: #fee2e2; color: var(--red); }
+  .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
+  .delta-up { color: var(--green); font-weight: 700; }
+  .muted { color: var(--muted); }
+  .scroll { overflow-x: auto; }
+  pre.json { background: #0f172a; color: #dbe4ff; border-radius: 8px; padding: 12px; overflow: auto; max-height: 320px; font-size: 12px; }
+  .ok-msg { border-left: 4px solid var(--green); background: #f0fdf4; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; }
+  .warn-msg { border-left: 4px solid var(--amber); background: #fffbeb; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; }
+  .err-msg { border-left: 4px solid var(--red); background: #fef2f2; padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>称重文件 × 码头登记：混合单位导入 / 规则晚到隔离 / 补发勘正</h1>
+  <p>仅使用 Node.js 内置模块 · 数据落盘于 DATA_DIR（默认 ./data）· 重复上传幂等 · 原值与换算值均带规则版本追溯</p>
+</header>
+
+<main>
+  <div class="toolbar">
+    <button class="primary" id="btn-import">导入混合单位数据</button>
+    <button class="warn" id="btn-supplement">补发单位映射</button>
+    <button class="neutral" id="btn-results">查勘正前后的重量</button>
+    <button class="ghost" id="btn-reset" title="清空落盘状态，回到空目录初始态">重置数据</button>
+    <span class="muted" id="busy"></span>
+  </div>
+
+  <div class="summary" id="summary" data-evidence-result="summary">
+    <div class="stat"><div class="label">已确认重量合计 (kg)</div><div class="value" id="stat-total">–</div></div>
+    <div class="stat"><div class="label">已确认行数</div><div class="value" id="stat-confirmed">–</div></div>
+    <div class="stat"><div class="label">隔离行数</div><div class="value" id="stat-quarantined">–</div></div>
+    <div class="stat"><div class="label">隔离箱数 (BOX)</div><div class="value" id="stat-boxes">–</div></div>
+    <div class="stat"><div class="label">拒收行数</div><div class="value" id="stat-rejected">–</div></div>
+  </div>
+
+  <section class="card">
+    <h2>① 导入混合单位数据 — 操作结果</h2>
+    <p class="hint">一次导入同时含 weighing（称重文件）与 dock（码头登记），KG 与 BOX 混用；无映射的 BOX 行自动隔离；同文件重复上传整批跳过。</p>
+    <div id="import-result" data-evidence-result="import-result">
+      <p class="muted">尚未操作。点击「导入混合单位数据」开始演示。</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>② 补发单位映射 — 操作结果</h2>
+    <p class="hint">每点击一次补发一条晚到的 BOX→KG 映射；仅重算当前仍处于隔离的行，已确认行保留原规则版本、不会重新推送。</p>
+    <div id="mapping-result" data-evidence-result="mapping-result">
+      <p class="muted">尚未补发映射。</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>③ 勘正前后的重量对照与行级追溯</h2>
+    <p class="hint">每次勘正的总量前后值、增量，以及每行原值 → 公斤值与命中的规则版本（ruleId / version / effectiveAt）。</p>
+    <div id="weight-result" data-evidence-result="weight-result">
+      <p class="muted">点击「查勘正前后的重量」加载。</p>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const num = (v) => (v === null || v === undefined) ? '<span class="muted">—</span>' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 4 });
+
+async function call(path, options) {
+  $('busy').textContent = '处理中…';
+  try {
+    const res = await fetch(path, {
+      headers: { 'content-type': 'application/json' },
+      ...options,
+    });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error || ('HTTP ' + res.status));
+    return body;
+  } finally {
+    $('busy').textContent = '';
+  }
+}
+
+function renderSummary(t) {
+  $('stat-total').textContent = t ? num(t.totalKg) : '–';
+  $('stat-confirmed').textContent = t ? t.confirmedCount : '–';
+  $('stat-quarantined').textContent = t ? t.quarantinedCount : '–';
+  $('stat-boxes').textContent = t ? num(t.quarantinedBoxes) : '–';
+}
+
+function refreshRejectedCount() {
+  return call('/api/results').then((r) => {
+    renderSummary(r.totals);
+    $('stat-rejected').textContent = r.rejected.length;
+  });
+}
+
+function importTable(e) {
+  return `
+  <div class="ok-msg">批次 <b>${esc(e.batchId)}</b> · 内容哈希 <span class="mono">${esc(e.contentHash)}</span>${e.skippedAsDuplicate ? ' · <b>整批判定为重复上传，已跳过</b>' : ''}</div>
+  <table>
+    <tr><th>新插入</th><th>同内容重复跳过</th><th>本次确认</th><th>本次隔离</th><th>冲突拒收</th><th>校验拒收</th><th class="num">导入前合计 kg</th><th class="num">导入后合计 kg</th></tr>
+    <tr>
+      <td>${e.inserted}</td><td>${e.duplicatesSkipped}</td><td>${e.confirmed}</td>
+      <td>${e.quarantined}</td><td>${e.conflicts.length}</td><td>${e.rejected.length}</td>
+      <td class="num">${num(e.totalKgBefore)}</td><td class="num">${num(e.totalKgAfter)}</td>
+    </tr>
+  </table>
+  ${e.conflicts.length || e.rejected.length ? `<h3>拒收明细</h3><div class="scroll"><table>
+    <tr><th>类型</th><th>行号</th><th>原因</th></tr>
+    ${e.conflicts.map((c) => `<tr><td><span class="chip rejected">冲突</span></td><td>${c.index}</td><td>${esc(c.reason)}</td></tr>`).join('')}
+    ${e.rejected.map((c) => `<tr><td><span class="chip rejected">拒收</span></td><td>${c.index}</td><td>${esc(c.reason)}</td></tr>`).join('')}
+  </table></div>` : ''}`;
+}
+
+$('btn-import').addEventListener('click', async () => {
+  try {
+    const body = await call('/api/demo/import', { method: 'POST', body: '{}' });
+    $('import-result').innerHTML = importTable(body.event) +
+      `<p class="hint">导入后状态：确认 ${body.totals.confirmedCount} 行 / 隔离 ${body.totals.quarantinedCount} 行 / 合计 ${num(body.totals.totalKg)} kg。隔离行等待补发映射。</p>`;
+    await refreshRejectedCount();
+  } catch (err) {
+    $('import-result').innerHTML = `<div class="err-msg">导入失败：${esc(err.message)}</div>`;
+  }
+});
+
+$('btn-supplement').addEventListener('click', async () => {
+  try {
+    const body = await call('/api/demo/supplement', { method: 'POST', body: '{}' });
+    if (!body.applied) {
+      $('mapping-result').innerHTML = `<div class="warn-msg">${esc(body.message)}</div>`;
+    } else {
+      const r = body.rule;
+      $('mapping-result').innerHTML = `
+      <div class="ok-msg">补发映射：<b>${esc(r.productId)}</b>（${esc(r.productName)}）1 ${esc(r.fromUnit)} = <b>${num(r.kgPerBox)}</b> ${esc(r.toUnit)} · 规则 <span class="mono">${esc(r.ruleId)} v${r.version}</span> 生效于 ${esc(r.effectiveAt)}</div>
+      <table>
+        <tr><th>重算隔离行</th><th class="num">勘正前合计 kg</th><th class="num">勘正后合计 kg</th><th class="num">增量 kg</th><th>说明</th></tr>
+        <tr><td>${body.affected.length}</td><td class="num">${num(body.before.totalKg)}</td>
+          <td class="num">${num(body.after.totalKg)}</td>
+          <td class="num delta-up">+${num(body.after.totalKg - body.before.totalKg)}</td>
+          <td>${esc(body.event.note)}</td></tr>
+      </table>
+      <h3>本次重算的行</h3><div class="scroll"><table>
+        <tr><th>行键</th><th>原值</th><th class="num">勘正前 kg</th><th class="num">勘正后 kg</th><th>追溯规则</th></tr>
+        ${body.affected.map((a) => `<tr>
+          <td class="mono">${esc(a.naturalKey)}</td>
+          <td>${num(a.rawQty)} ${esc(a.rawUnit)}</td>
+          <td class="num muted">隔离中（无值）</td>
+          <td class="num"><b>${num(a.afterKg)}</b></td>
+          <td class="mono">${esc(a.ruleRef.ruleId)} v${a.ruleRef.version} @ ${esc(a.ruleRef.effectiveAt)}</td>
+        </tr>`).join('')}
+      </table></div>`;
+    }
+    await refreshRejectedCount();
+  } catch (err) {
+    $('mapping-result').innerHTML = `<div class="err-msg">补发失败：${esc(err.message)}</div>`;
+  }
+});
+
+$('btn-results').addEventListener('click', async () => {
+  try {
+    const r = await call('/api/results');
+    renderSummary(r.totals);
+    $('stat-rejected').textContent = r.rejected.length;
+
+    const corrections = r.corrections.length ? `
+      <h3>勘正事件（总量前后对照）</h3>
+      <div class="scroll"><table>
+        <tr><th>时间</th><th>商品</th><th class="num">1 箱=kg</th><th>规则版本</th><th class="num">勘正前 kg</th><th class="num">勘正后 kg</th><th class="num">增量</th><th>重算行数</th></tr>
+        ${r.corrections.map((c) => `<tr>
+          <td class="mono">${esc(c.at)}</td><td>${esc(c.productId)}</td><td class="num">${num(c.kgPerBox)}</td>
+          <td class="mono">v${c.version}</td>
+          <td class="num">${num(c.totalKgBefore)}</td><td class="num"><b>${num(c.totalKgAfter)}</b></td>
+          <td class="num delta-up">+${num(c.deltaKg)}</td><td>${c.affectedCount}</td>
+        </tr>`).join('')}
+      </table></div>` : '<p class="muted">暂无勘正事件。</p>';
+
+    const rows = `
+      <h3>全部行（原值 / 换算值 / 规则追溯）</h3>
+      <div class="scroll"><table>
+        <tr><th>状态</th><th>来源</th><th>ref</th><th>商品</th><th class="num">原值</th><th class="num">公斤值</th><th>规则追溯（当时版本）</th><th>导入时间</th><th>换算/勘正时间</th></tr>
+        ${r.rows.map((row) => `<tr>
+          <td><span class="chip ${row.status}">${row.status === 'confirmed' ? '已确认' : '隔离'}</span></td>
+          <td>${row.source === 'weighing' ? '称重文件' : '码头登记'}</td>
+          <td class="mono">${esc(row.ref)}</td>
+          <td>${esc(row.productName)} <span class="muted">(${esc(row.productId)})</span></td>
+          <td class="num">${num(row.rawQty)} ${esc(row.rawUnit)}</td>
+          <td class="num"><b>${num(row.kgValue)}</b></td>
+          <td class="mono">${row.ruleRef ? (row.ruleRef.ruleId ? `${esc(row.ruleRef.ruleId)} v${row.ruleRef.version} @ ${esc(row.ruleRef.effectiveAt)}（${num(row.ruleRef.kgPerBox)} kg/箱）` : esc(row.ruleRef.basis)) : '<span class="muted">隔离中：无可用规则</span>'}</td>
+          <td class="mono">${esc(row.importedAt)}</td>
+          <td class="mono">${esc(row.convertedAt ?? '—')}${row.correctedAt ? `<br><span class="chip quarantined">勘正 ${esc(row.correctedAt)}</span>` : ''}</td>
+        </tr>`).join('')}
+      </table></div>`;
+
+    const rejected = r.rejected.length ? `
+      <h3>累计拒收（异常数据）</h3>
+      <div class="scroll"><table>
+        <tr><th>批次</th><th>行号</th><th>原因</th></tr>
+        ${r.rejected.map((x) => `<tr><td class="mono">${esc(x.batchId)}</td><td>${x.index}</td><td>${esc(x.reason)}</td></tr>`).join('')}
+      </table></div>` : '';
+
+    $('weight-result').innerHTML = corrections + rows + rejected;
+  } catch (err) {
+    $('weight-result').innerHTML = `<div class="err-msg">查询失败：${esc(err.message)}</div>`;
+  }
+});
+
+$('btn-reset').addEventListener('click', async () => {
+  await call('/api/reset', { method: 'POST', body: '{}' });
+  renderSummary(null);
+  $('stat-rejected').textContent = '–';
+  $('import-result').innerHTML = '<p class="muted">已重置，请重新导入。</p>';
+  $('mapping-result').innerHTML = '<p class="muted">已重置。</p>';
+  $('weight-result').innerHTML = '<p class="muted">已重置。</p>';
+});
+
+refreshRejectedCount().catch(() => {});
+</script>
+</body>
+</html>

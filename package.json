@@ -1,0 +1,16 @@
+{
+  "name": "mixed-unit-weight-import",
+  "version": "1.0.0",
+  "private": true,
+  "description": "称重文件与码头登记混合单位（公斤/箱）导入、规则晚到隔离与勘正演示（仅使用 Node.js 内置模块）",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}
